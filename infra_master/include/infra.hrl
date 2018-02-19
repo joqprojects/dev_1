@@ -1,0 +1,4 @@
+-define(DBASE_IP,"80.216.90.159").
+-define(DBASE_PORT,10000).
+-define(CLIENT_SETUP,[binary,{packet,4}]).
+-define(SERVER_SETUP,[binary,{packet,4},{reuseaddr,true},{active,true}]).

@@ -1,0 +1,359 @@
+%%% -------------------------------------------------------------------
+%%% Author  : uabjle
+%%% Description : dbase using dets 
+%%%
+%%% Created : 10 dec 2012
+%%% -------------------------------------------------------------------
+-module(infra_master_lib).
+ 
+
+
+%% --------------------------------------------------------------------
+%% Include files
+%% --------------------------------------------------------------------
+%%  -include("").
+%% --------------------------------------------------------------------
+
+%% External exports
+
+-export([add_all_workers/0,add_all_workers/2,
+	 connect_workers/1,heartbeat/1
+	]).
+
+
+%% ====================================================================
+%% External functions
+%% ====================================================================
+
+%% ====================================================================
+%% Server functions
+%% ====================================================================
+
+%% --------------------------------------------------------------------
+%% Function: handle_call/3
+%% Description: Handling call messages
+%% Returns: {reply, Reply, State}          |
+%%          {reply, Reply, State, Timeout} |
+%%          {noreply, State}               |
+%%          {noreply, State, Timeout}      |
+%%          {stop, Reason, Reply, State}   | (terminate/2 is called)
+%%          {stop, Reason, State}            (terminate/2 is called)
+%% -------------------------------------------------------------------
+add_all_workers()->
+    case sd:call(dbase,infra_dbase,id_all_workers,[],5000) of
+	{ok,Workers}->
+	    Reply=rpc:call(node(),?MODULE,add_all_workers,[Workers,ok],30000);
+	Err->
+	    Reply={error,{?MODULE,?LINE,Err}}
+    end,   
+    Reply.
+
+add_all_workers([],Acc)->
+    Acc;
+add_all_workers([Worker|T],_Acc)->
+     case sd:call(dbase,infra_dbase,read_object,[object,{worker,Worker}],5000) of
+	 [{brd_ipaddr,IpAddr},
+	  {brd_port,BrdMgrPort},
+	  {worker_port,_}]->
+	     true=sd:add_resource(Worker,IpAddr,BrdMgrPort),
+	    % true=sd:add_resource(Wrk,IpAddr,WrkPort),
+	     NewAcc=ok;
+	 Err ->
+	     NewAcc={error,{?MODULE,?LINE,Err}}
+     end,
+    add_all_workers(T,NewAcc).
+
+
+
+%% --------------------------------------------------------------------
+%% Function: 
+%% Description:
+%% Returns: non
+%% --------------------------------------------------------------------
+connect_workers(Interval)->
+    timer:sleep(Interval),
+    case sd:call(dbase,infra_dbase,id_all_workers,[],5000) of
+	{ok,Workers}->
+	    Reply=rpc:call(node(),?MODULE,heartbeat,[Workers],60000);
+	Err->
+	    Reply={error,{?MODULE,?LINE,Err}}
+    end,   
+    spawn(infra_master_lib,connect_workers,[Interval]),
+    Reply.
+
+heartbeat([])->
+    ok;
+heartbeat([Worker|T])->
+    io:format("~p~n",[{?MODULE,?LINE,{Worker}}]),
+    case sd:call(Worker,brd_mgr,connect,[],5000) of
+	standby->
+	    io:format("~p~n",[{?MODULE,?LINE,{Worker}}]),
+	   case load_services(latest_release,Worker) of
+	       {error,Err}->
+		   Reply={error,Worker,standby,Err};
+	       ok->
+		   %Stop active
+		   Host=sd:call(Worker,net_adm,localhost,[],5000),
+		   ActiveNodeStr="active"++"@"++Host,
+		   ActiveNode=list_to_atom(ActiveNodeStr),
+		   case sd:call(Worker,net_adm,ping,[ActiveNode],5000) of
+		       pong->
+			   io:format("~p~n",[{?MODULE,?LINE,ActiveNode,pong}]),
+			   sd:call(Worker,rpc,call,[ActiveNode,application,stop,[q_mgr]],5000),
+			   io:format("~p~n",[{?MODULE,?LINE}]),
+			  % timer:slep(3000), % wait for ongoing task to stop 
+			   sd:call(Worker,rpc,call,[ActiveNode,erlang,halt,[]],5000),
+			   io:format("~p~n",[{?MODULE,?LINE}]);
+		       pang->
+			   already_stopped
+			  % io:format("~p~n",[{?MODULE,?LINE,ActiveNode,pang}])
+		   end,
+		   %% mv candidatet -> active
+		   sd:call(Worker,os,cmd,["rm -r active"],5000),
+		   timer:sleep(2000),
+		 %  io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,file,list_dir,["active"],5000)}]),
+		   sd:call(Worker,os,cmd,["mv candidate active"],5000),
+		   io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,file,list_dir,["active"],5000)}]),
+
+		   %% start/restart active node and start q_mgr
+		    case start_node(Worker,"active","active") of
+			{ok,Node}->
+		    io:format("~p~n",[{?MODULE,?LINE,{ok,Node}}]),
+			    {ok,ServicesStr}=sd:call(Worker,file,list_dir,["active"],5000),
+			    case test_services(ServicesStr,Worker,Node,ok) of
+				ok->
+				    io:format("~p~n",[{?MODULE,?LINE,{ok,test}}]),
+				    case {sd:call(dbase,infra_dbase,read_object,[worker_port,{worker,Worker}],5000),
+					  sd:call(dbase,infra_dbase,read_object,[server,{tcp_setup,server}],5000)} of
+					{{error,Err},_}->
+					    Reply={error,{?MODULE,?LINE,Worker,Err}};
+					{_,{error,Err}}->
+					    Reply={error,{?MODULE,?LINE,Worker,Err}};
+					{WorkerPort,ServerSetUp}->
+					 %   io:format("~p~n",[{?MODULE,?LINE,Worker,WorkerPort,ServerSetUp}]),
+						%start_server(ServicePort,ServerSetUp)
+					    
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,rpc,call,[Node,application,load,[q_mgr]],5000)}]),
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,rpc,call,[Node,application,start,[q_mgr]],5000)}]),
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,rpc,call,[Node,q_mgr,start_server,[WorkerPort,ServerSetUp]],5000)}]),
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,rpc,call,[Node,application,load,[myadd]],5000)}]),
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,rpc,call,[Node,application,start,[myadd]],5000)}]),
+					   % true=sd:add_resource(calc,IpAddrDbase,PortDbase),
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,net_adm,ping,[Node],5000)}]), 
+					    IpAddr=sd:call(dbase,infra_dbase,read_object,[brd_ipaddr,{worker,Worker}],5000),  
+					    true=sd:add_resource(myadd,IpAddr,WorkerPort),
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,net_adm,ping,[Node],5000)}]), 
+
+					    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,rpc,call,[Node,myadd,add,[23+19]],5000)}]),
+					    
+
+					 %   spawn(fun()->test_calc() end),
+					    						    
+
+					 %   sd:call(Worker,brd_mgr,activate,[],5000),
+					    Reply={ok,Worker,standby}
+				    end;
+				Err->
+				    io:format("~p~n",[{?MODULE,?LINE,Worker,Err}]),
+				    Reply={error,{?MODULE,?LINE,Worker,Err}}
+			    end;
+			Err->
+			    io:format("~p~n",[{?MODULE,?LINE,Worker,Err}]),
+			    Reply={error,{?MODULE,?LINE,Worker,Err}}
+		    end
+	   end;
+	active ->
+	    Reply={Worker,active};  
+	{error,Err}->
+	    io:format("~p~n",[{?MODULE,?LINE,Err}]),
+	    Reply={error,{?MODULE,?LINE,Err}}
+    end,
+    io:format("~p~n",[{?MODULE,?LINE,Reply}]),
+    timer:sleep(500),
+    heartbeat(T).
+
+test_calc()->
+    io:format("test calc 19+23 =~p~n",[{sd:call(calc,myadd,add,[19,23],5000),self(), ?MODULE,?LINE}]),
+    timer:sleep(10000),
+    test_calc().
+%% --------------------------------------------------------------------
+%% Function: 
+%% Description:
+%% Returns: non
+%% active = services to run
+%% canditate = temporary dir where new load is loaded and teast befor update
+%% rollback = active -> rollback when updating
+%% --------------------------------------------------------------------
+load_services(latest_release,Worker)->
+    %% Preventive action stop candidate vm and  delete candidate dir
+    Host=sd:call(Worker,net_adm,localhost,[],5000),
+    CandidateNodeStr="candidate@"++Host,
+    CandidateNode=list_to_atom(CandidateNodeStr),
+    sd:call(Worker,rpc,call,[CandidateNode,erlang,halt,[]],5000),
+    sd:call(Worker,os,cmd,["rm -r candidate"],5000),
+    timer:sleep(500),
+    
+    %% Create candidate dir and  services dirs
+    
+    CandidateDir="candidate",
+    CandidateNodeName="candidate",
+    case start_node(Worker,CandidateDir,CandidateNodeName) of
+	{ok,CandidateNode}->
+	    ok=sd:call(Worker,file,make_dir,[CandidateDir],5000),
+	    MandatoryServices=sd:call(dbase,infra_dbase,read_object,[services,{deployment,"mandatory"}],5000),
+	    ResultMandatory=store_test_tar_files(MandatoryServices,Worker,CandidateDir,CandidateNode,[]),
+	  %  io:format("~p~n",[{?MODULE,?LINE,time(),self(),ResultMandatory}]),	   
+	    WorkerServices=sd:call(dbase,infra_dbase,read_object,[services,{deployment,Worker}],5000),
+	    ResultWorkers=store_test_tar_files(WorkerServices,Worker,CandidateDir,CandidateNode,[]),
+	 %   io:format("~p~n",[{?MODULE,?LINE,time(),self(),ResultWorkers}]),	
+	  %  ok=stop_node( sd:call(Worker,rpc,call,[CandidateNode,erlang,halt,[]],5000),
+	    case {ResultMandatory,ResultWorkers} of
+		{ok,ok}->
+		    Reply=ok;
+		_->
+		    Reply={error,{?MODULE,?LINE,ResultMandatory,ResultWorkers}}
+	    end,
+	    sd:call(Worker,rpc,call,[CandidateNode,erlang,halt,[]],5000);
+	{error,Err}->
+	    Reply={error,{?MODULE,?LINE,Err}}
+    end,
+    Reply.
+
+store_test_tar_files([],_Worker,_CandidateDir,_CandidateNode,Acc)->
+    Acc;
+store_test_tar_files([{Service,_NumInstances}|T],Worker,CandidateDir,CandidateNode,_Acc)->
+    Key={service,Service},
+    case sd:call(dbase,infra_dbase,read_object,[latest_release,Key],5000) of
+	{error,Err}->
+	    NewAcc={error,{?MODULE,?LINE,Err}},
+	    NewT=[];
+	LatestStr->
+	    {TarFileName,Binary}=sd:call(dbase,infra_dbase,read_object,[LatestStr,Key],5000),
+	    ServiceDir=filename:join(CandidateDir,Service),    
+	    case sd:call(Worker,file,make_dir,[ServiceDir],5000) of
+		ok->
+		    case sd:call(Worker,file,write_file,[TarFileName,Binary],5000) of
+			ok->
+			    TarCmd="tar -xvf "++TarFileName++" -C "++ServiceDir,
+			    sd:call(Worker,os,cmd,[TarCmd],5000),
+			   % timer:sleep(1000),
+			    Ebin=filename:join(ServiceDir,"ebin"),
+		%	     io:format("~p~n",[{?MODULE,?LINE,time(),self(),sd:call(Worker,rpc,call,[CandidateNode,code,add_patha,[Ebin]],5000)}]),
+			    sd:call(Worker,rpc,call,[CandidateNode,code,add_patha,[Ebin]],5000),
+			    case test_service(Service,CandidateNode,Worker) of
+				ok->
+				    NewAcc=ok,
+				    NewT=T;
+				{error,Err}->
+				    NewAcc={error,{?MODULE,?LINE,Err}},
+				    NewT=[]
+			    end;
+			{error,Err}->
+			    NewAcc={error,{?MODULE,?LINE,Err}},
+			    NewT=[]
+		    end;
+		{error,eexist} ->
+		    case sd:call(Worker,file,write_file,[TarFileName,Binary],5000) of
+			ok->
+			    TarCmd="tar -xvf "++TarFileName++" -C "++ServiceDir,
+			    sd:call(Worker,os,cmd,[TarCmd],5000),
+			    %timer:sleep(1000),
+			    _Ebin=filename:join(ServiceDir,"ebin"),
+%			    io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,rpc,call,[CandidateNode,code,add_patha,[Ebin]],5000)}]),
+			    case test_service(Service,CandidateNode,Worker) of
+				ok->
+				    NewAcc=ok,
+				    NewT=T;
+				{error,Err}->
+				    NewAcc={error,{?MODULE,?LINE,Err}},
+				    NewT=[]
+			    end;
+			{error,Err}->
+			    NewAcc={error,{?MODULE,?LINE,Err}},
+			    NewT=[]
+		    end;
+		Err->
+		    NewAcc={error,{?MODULE,?LINE,Err}},
+		    NewT=[]
+	    end
+    end,    
+    store_test_tar_files(NewT,Worker,CandidateDir,CandidateNode,NewAcc).
+
+start_node(Worker,Dir,NodeName)->
+ %   io:format("~p~n",[{?MODULE,?LINE,sd:call(Worker,file,get_cwd,[],5000)}]),
+    
+    EbinDirs=filename:join([Dir,"*","ebin"]),
+%    io:format("~p~n",[{?MODULE,?LINE,EbinDirs}]),
+    Host=sd:call(Worker,net_adm,localhost,[],5000),
+    NodeStr=NodeName++"@"++Host,
+    Node=list_to_atom(NodeStr),
+    ErlCmd="erl -pa "++EbinDirs++" "++"-sname "++NodeStr++" "++"-detached",
+    
+    case sd:call(Worker,os,cmd,[ErlCmd],5000) of
+	[]->
+	    Reply={ok,Node},
+	    timer:sleep(3000); % Wait for Linux to start the VM
+	Err->
+
+	    Reply={error,{?MODULE,?LINE,couldnt_start_node,Err}}
+    end,
+    Reply.
+
+
+test_service(ServiceStr,Node,Worker) ->
+    Service=list_to_atom(ServiceStr),
+    Ping=sd:call(Worker,net_adm,ping,[Node],5000),
+    Path=sd:call(Worker,rpc,call,[Node,code,get_path,[]],5000),
+    R1=sd:call(Worker,rpc,call,[Node,application,load,[Service]],5000),
+    R2=sd:call(Worker,rpc,call,[Node,application,start,[Service]],5000),
+    R3=sd:call(Worker,rpc,call,[Node,Service,test,[]],5000),
+    case {R1,R2,R3} of
+	{ok,ok,ok}->
+	    Reply=ok;
+	 _->
+	    Reply={error,{?MODULE,?LINE,Service,R1,R2,R3}}
+    end,
+    Reply.
+
+
+
+
+%% --------------------------------------------------------------------
+%% Function: 
+%% Description:
+%% Returns: non
+%% --------------------------------------------------------------------
+  
+test_services([],_Worker,_Node,ok)->
+    ok;
+test_services([],_Worker,_Node,{error,Service})->
+    {error,Service};
+test_services(_ListServicesStr,_Worker,_Node,{error,Service}) ->
+    {error,Service};
+test_services([ServiceStr|T],Worker,Node,_Acc) ->
+    io:format("Testing service ~p~n",[{Worker,ServiceStr}]),
+    Service=list_to_atom(ServiceStr),
+    R1=sd:call(Worker,rpc,call,[Node,application,load,[Service]],5000),
+    R2=sd:call(Worker,rpc,call,[Node,application,start,[Service]],5000),
+    R3=sd:call(Worker,rpc,call,[Node,Service,test,[]],5000),
+    case {R1,R2,R3} of
+	{ok,ok,ok}->
+	    NewAcc=ok;
+	_ ->
+	    NewAcc={error,Service}
+    end,
+    test_services(T,Worker,Node,NewAcc).
+    
+		     
+
+	    
+%% --------------------------------------------------------------------
+%% Function: 
+%% Description:
+%% Returns: non
+%% --------------------------------------------------------------------
+%% --------------------------------------------------------------------
+%% Function: 
+%% Description:
+%% Returns: non
+%% --------------------------------------------------------------------
