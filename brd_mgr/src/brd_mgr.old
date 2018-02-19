@@ -1,0 +1,258 @@
+%%% -------------------------------------------------------------------
+%%% Author  : uabjle
+%%% Description : dbase using dets 
+%%%
+%%% Created : 10 dec 2012
+%%% -------------------------------------------------------------------
+-module(brd_mgr).
+
+-behaviour(gen_server).
+
+%% --------------------------------------------------------------------
+%% Include files
+%% --------------------------------------------------------------------
+%%
+%% --------------------------------------------------------------------
+
+-define (BRDCONFIG,"include/brd.config").
+
+%% External exports
+-export([hello_world/0]).
+
+
+-export([start/0,stop/0]).
+-export([test/0]).
+
+
+
+%% gen_server callbacks
+-export([init/1, handle_call/3,handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+
+-record(state, {}).
+
+%% ====================================================================
+%% External support functions
+%% ====================================================================
+
+test()->
+    Reply=test_brd_mgr:test(),
+    Reply.
+
+%% ====================================================================
+%% External Server functions
+%% ====================================================================
+start()-> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+stop()-> gen_server:call(?MODULE, {stop},infinity).
+ 
+hello_world()-> 
+    gen_server:call(?MODULE, {hello_world},infinity).
+%% ====================================================================
+%% Server functions
+%% ====================================================================
+
+%% --------------------------------------------------------------------
+%% Function: init/1
+%% Description: Initiates the server
+%% Returns: {ok, State}          |
+%%          {ok, State, Timeout} |
+%%          ignore               |
+%%          {stop, Reason}
+%% --------------------------------------------------------------------
+init([]) ->
+    {ok,BrdConfig}=file:consult(?BRDCONFIG),
+    {infra_master,InfraInfo}=lists:keyfind(infra_master,1,BrdConfig),
+    {ip_addr,InfraIp}=lists:keyfind(ip_addr,1,InfraInfo),
+    {port,InfraPort}=lists:keyfind(port,1,InfraInfo),
+    
+    {brd_info,BrdInfo}= lists:keyfind(brd_info,1,BrdConfig),
+    {id,BrdId}=lists:keyfind(id,1,BrdInfo),
+    {port1,BrdPort}=lists:keyfind(port1,1,BrdInfo),
+    {connect_tries,ConnTries}=lists:keyfind(connect_tries,1,BrdInfo),
+    {period,Period}=lists:keyfind(period,1,BrdInfo),
+    {timeout,Timeout}=lists:keyfind(timeout,1,BrdInfo),
+
+    {tcp_setup,TcpInfo}=lists:keyfind(tcp_setup,1,BrdConfig),
+    {client,ClientSetUp}=lists:keyfind(client,1,TcpInfo),
+
+    case connect_master(BrdId,ConnTries,Period,Timeout,InfraIp,InfraPort,ClientSetUp) of
+	ok->
+	    {server,ServerSetUp}=lists:keyfind(server,1,TcpInfo),
+	    {port2,ServicePort}=lists:keyfind(port2,1,BrdInfo),
+	    case brd_mgr_lib:latest_rel() of
+		{ok, [Latest,Current]}->
+		    LatestNameStr=Latest++"_worker"++"@"++net_adm:localhost(),
+		    CurrentNameStr=Current++"_worker"++"@"++net_adm:localhost(),
+		    PathLatestRelease=Latest++"/*/ebin",
+		    rpc:cast(list_to_atom(CurrentNameStr),erlang,halt,[]),
+		    ok=brd_mgr_lib:start_worker(LatestNameStr,PathLatestRelease,ServicePort,ServerSetUp),
+		    {ok,LSock}=gen_tcp:listen(BrdPort,ServerSetUp),  
+		    spawn(fun()->par_connect(LSock) end);
+		{ok, [Latest]} ->
+		    LatestNameStr=Latest++"_worker"++"@"++net_adm:localhost(),
+		    PathLatestRelease=Latest++"/*/ebin",
+		    ok=brd_mgr_lib:start_worker(LatestNameStr,PathLatestRelease,ServicePort,ServerSetUp),
+		    {ok,LSock}=gen_tcp:listen(BrdPort,ServerSetUp),  
+		    spawn(fun()->par_connect(LSock) end);
+		{error,{_M,_L,no_release_dir_found}}->
+		    io:format("Application crashed ~p~n",[?MODULE]),
+		    exit(kill)
+	    end,
+	    io:format("Application Starting ~p~n",[?MODULE]);
+	{error,_Err}->
+	    io:format("Application crashed ~p~n",[?MODULE]),
+	    exit(kill)
+    end,
+    {ok, #state{}}.
+
+%% --------------------------------------------------------------------
+%% Function: handle_call/3
+%% Description: Handling call messages
+%% Returns: {reply, Reply, State}          |
+%%          {reply, Reply, State, Timeout} |
+%%          {noreply, State}               |
+%%          {noreply, State, Timeout}      |
+%%          {stop, Reason, Reply, State}   | (terminate/2 is called)
+%%          {stop, Reason, State}            (terminate/2 is called)
+%% --------------------------------------------------------------------
+
+%% --------------------------------------------------------------------
+%% Function: 
+%% Description:
+%% Returns: non
+%% --------------------------------------------------------------------
+handle_call({hello_world}, _From, State) ->
+    Reply = {?MODULE,?LINE,hello_world},
+    {reply, Reply, State};
+% --------------------------------------------------------------------
+%% Function: stop/0
+%% Description:
+%% 
+%% Returns: non
+%% --------------------------------------------------------------------
+handle_call({stop}, _From, State) ->
+    {stop, normal, shutdown_ok, State};
+
+handle_call(Request, From, State) ->
+    Reply = {unmatched_signal,?MODULE,Request,From},
+    {reply, Reply, State}.
+
+%% --------------------------------------------------------------------
+%% Function: handle_cast/2
+%% Description: Handling cast messages
+%% Returns: {noreply, State}          |
+%%          {noreply, State, Timeout} |
+%%          {stop, Reason, State}            (terminate/2 is called)
+%% --------------------------------------------------------------------
+
+
+handle_cast(Msg, State) ->
+    io:format("unmatched match cast ~p~n",[{Msg,?MODULE,time()}]),
+    {noreply, State}.
+
+%% --------------------------------------------------------------------
+%% Function: handle_info/2
+%% Description: Handling all non call/cast messages
+%% Returns: {noreply, State}          |
+%%          {noreply, State, Timeout} |
+%%          {stop, Reason, State}            (terminate/2 is called)
+%% --------------------------------------------------------------------
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+%% --------------------------------------------------------------------
+%% Function: terminate/2
+%% Description: Shutdown the server
+%% Returns: any (ignored by gen_server)
+%% --------------------------------------------------------------------
+terminate(_Reason, _State) ->
+    ok.
+
+%% --------------------------------------------------------------------
+%% Func: code_change/3
+%% Purpose: Convert process state when code is changed
+%% Returns: {ok, NewState}
+%% --------------------------------------------------------------------
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+%% --------------------------------------------------------------------
+%%% Internal functions
+%% --------------------------------------------------------------------
+%% --------------------------------------------------------------------
+%% Function: get_all/0
+%% Description:if needed creates dets file with name ?MODULE, and
+%% initates the debase
+%% Returns: non
+%% --------------------------------------------------------------------
+par_connect(LSock)->
+    {ok,Socket}=gen_tcp:accept(LSock),  
+    spawn(fun()->par_connect(LSock) end),
+    loop(Socket).
+
+loop(Socket)->
+    receive
+	{tcp,Socket,Bin}->
+	    {MsgRef,Service,Request,Args}=binary_to_term(Bin),
+	    case Service of
+		brd_mgr->
+		    Result=rpc:call(node(),brd_mgr_lib,Request,Args),
+		    ReplyBin=term_to_binary({MsgRef,Result});
+		NoService->
+		    ReplyBin=term_to_binary({MsgRef,{error,{wrong_service,NoService}}})
+	    end,
+	    gen_tcp:send(Socket,ReplyBin),
+	    loop(Socket);
+	{tcp_closed,Socket} ->
+	    tcp_closed;
+	   % io:format("Socket closed ~p~n",[{?MODULE,?LINE,Socket}]);
+	_Err->
+	    loop(Socket)
+    after 1000*60*10 ->       % Kill if inactive in 10 mins
+	    inactive_too_long
+    end.
+
+
+%% --------------------------------------------------------------------
+%% Function: 
+%% Description:
+%% Returns: non
+%% --------------------------------------------------------------------
+connect_master(BoardId,NumTries,Period,ReplyTimeout,Ip,Port,ClientSetUp)->
+    Result=connect_master(BoardId,NumTries,Period,ReplyTimeout,Ip,Port,ClientSetUp,{error,{?MODULE,?LINE,could_not_connect}}),
+    Result.
+connect_master(_BoardId,0,_Period,_ReplyTimeout,_Ip,_Port,_ClienSetUp,Result)->
+    Result;
+connect_master(_BoardId,_NumTries,_Period,_ReplyTimeout,_Ip,_Port,_ClientSetUp,ok) ->
+    ok;
+connect_master(BoardId,NumTries,Period,ReplyTimeout,Ip,Port,ClientSetUp,_Result)->
+    case gen_tcp:connect(Ip,Port,ClientSetUp) of
+	{ok,Socket}->
+	    Ref={self(),1},
+	    gen_tcp:send(Socket,term_to_binary({Ref,{infra,connect,[{boardid,BoardId}]}})),
+	    receive
+		{tcp,Socket,Bin}->
+		    case binary_to_term(Bin) of
+			{Ref,ok}->
+			    NewResult=ok,
+			    gen_tcp:close(Socket);
+			{Ref,{error,Err}} ->
+			    NewResult={error,{?MODULE,?LINE,Err}};
+			Err ->
+			    NewResult={error,{?MODULE,?LINE,Err}}
+		    end;
+		{tcp_closed,Socket} ->
+		    NewResult={error,{?MODULE,?LINE,tcp_closed}}
+	    after ReplyTimeout ->
+		    NewResult={error,{?MODULE,?LINE,time_out}}
+	    end;
+	{error,Err} ->
+	    NewResult={error,{?MODULE,?LINE,Err}}
+    end,
+    case NewResult of
+	{error,_}->
+	    timer:sleep(Period);
+	 _->
+	    ok
+    end,
+    connect_master(BoardId,NumTries-1,Period,ReplyTimeout,Ip,Port,ClientSetUp,NewResult).
+
