@@ -1,0 +1,38 @@
+%% Persistant data stored in dets_dbase
+% 1. Pool of worker 
+-record(worker_pool,{
+	pool,      % [{board_id,worker_info}]
+	}).
+% 2. Worker info
+-record(worker_info,{
+	board_id,	% 'rpi3_01@stugan.joqhome.eu'
+	worker_id,	% 'rpi3-01-storage@home.joqhome.com'
+	capabilities,   % []=generic, [{disc,[100]},{temp,[type, id]}] = special hw
+	sw_release,	% latest release "1-0-12"
+	applications}.  % [erlang_applications]
+
+
+%% 3. Device info
+%%
+-record(device_info,{
+	device_name,  % "switch_kitchen_varmdo"
+	device_id,    % Specific id defined by device manufactor ex "1"	
+	type,       % "switch"
+	addr,	    %  worker_id ='rpi3-01-stug_ctrl@stugan.joqhome.com'
+	m,	    %  Module that handles the device (ex tellstick)
+	f,	    %  Functions [turn]
+	a,	    %  Args      [{on,device_id},{off,device_id}]
+	state	    %  Current state [on,off,unknown]
+	}).
+	
+%% Session Data stored in ets table
+
+%% active_workers={board_id,IpAddr,Port}
+	
+%% 1. Worker status active | standby | no_contact
+-record(worker_status,{
+	active,         % [board_id]
+	standby,        % [board_id]
+	no_contact     %  [board_id]
+	}.
+	

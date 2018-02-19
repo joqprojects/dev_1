@@ -1,0 +1,150 @@
+%%% -------------------------------------------------------------------
+%%% Author  : Joq Erlang
+%%% Description : 
+%%%  
+%%% Created : 10 dec 2012
+%%% -------------------------------------------------------------------
+-module(test_repo_mgr).
+
+%% --------------------------------------------------------------------
+%% Include files
+%% --------------------------------------------------------------------
+%%  -include("").
+-include_lib("eunit/include/eunit.hrl").
+
+
+%% --------------------------------------------------------------------
+-export([]).
+
+%% ====================================================================
+%% External functions
+%% ====================================================================
+
+%% --------------------------------------------------------------------
+%% Function: Application
+%% Description:
+%% Returns: non
+%% ------------------------------------------------------------------
+start_test()->
+    {ok,ok}=repo_mgr:start_repo(),
+       %check if dbase is alive and kickin
+    'infra_dbase@joq-desktop'=sd:call(dbase,erlang,node,[],1000),
+    ok.
+
+delete_service_test__()->
+    Service="myadd",
+    _=repo_mgr:delete_service(Service),
+    ok.
+create_service_test()->
+    DevAreaDir_100="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area/myadd_test/1.0.0", 
+    Service1="myadd",
+    _=repo_mgr:create_update_service(Service1,DevAreaDir_100),
+%  DevAreaDir_101="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area/myadd_test/1.0.1", 
+ %   _=repo_mgr:create_update_service(Service1,DevAreaDir_101),
+  %DevAreaDir_0099="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area/myadd_test/0.0.99", 
+  %  _=repo_mgr:create_update_service(Service1,DevAreaDir_0099),
+ 
+    ok.
+
+create_service_mem_dbase_test()->
+    DevAreaDir_100="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area/mem_dbase", 
+    Service1="mem_dbase",
+    _=repo_mgr:create_update_service(Service1,DevAreaDir_100), 
+    ok.
+read_service_100_test_xx()->
+    Service1="myadd",
+    LatestVsn=repo_mgr:latest_release(Service1),
+    "1.0.1"=LatestVsn,
+    ["myadd-1.0.1.tar",_]=repo_mgr:read_service(latest_release,Service1),
+    ["myadd-1.0.0.tar",_]=repo_mgr:read_service("1.0.0",Service1),
+    ["myadd-0.0.99.tar",_]=repo_mgr:read_service("0.0.99",Service1), 
+    ok.
+
+create_service_again_test()->
+    DevAreaDir_100="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area/myadd_test/1.0.0", 
+    Service1="myadd",
+    _=repo_mgr:create_update_service(Service1,DevAreaDir_100),
+  DevAreaDir_101="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area/myadd_test/1.0.1", 
+    _=repo_mgr:create_update_service(Service1,DevAreaDir_101),
+  DevAreaDir_0099="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area/myadd_test/0.0.99", 
+    _=repo_mgr:create_update_service(Service1,DevAreaDir_0099),
+    ok.
+ 
+read_service_100_again_test_xx()->
+    Service1="myadd",
+    LatestVsn=repo_mgr:latest_release(Service1),
+    "1.0.1"=LatestVsn,
+    ["myadd-1.0.1.tar",_]=repo_mgr:read_service(latest_release,Service1),
+    ["myadd-1.0.0.tar",_]=repo_mgr:read_service("1.0.0",Service1),
+    ["myadd-0.0.99.tar",_]=repo_mgr:read_service("0.0.99",Service1), 
+    ok.
+
+
+unzip_deploy_test_xx()->
+    Service1="myadd",
+    LatestVsn=repo_mgr:latest_release(Service1),
+    [TarBaseName,Binary]=repo_mgr:read_service(latest_release,Service1),
+    ok=file:write_file(TarBaseName,Binary),
+    ok=erl_tar:extract(TarBaseName),
+    EbinPath=filename:join(Service1,"ebin"),
+    code:add_path(EbinPath),
+    error=myadd:test(),
+    ok=file:delete(TarBaseName),
+    os:cmd("rm -r "++Service1),
+    ok.
+
+glurk_test()->
+    ok.
+
+build_release_ok_100_test()->
+    DevAreaDir="/home/joq/erlang/dist_erlang_4-0-0/dev/dev_area",
+    Release="1.0.0",
+    ok=repo_mgr:build_release(Release,DevAreaDir),
+    ok.
+
+build_release_error_test_X()->
+    DevAreaDir="/home/joq/erlang/dist_erlang_3-0-0/dev/dev_area_not_ok",
+    Release="1-0-25",
+    {build_failed,"1-0-25",List}=repo_mgr:build_release(Release,DevAreaDir),
+    ok.
+
+build_release_ok_1_test_X()->
+    DevAreaDir="/home/joq/erlang/dist_erlang_3-0-0/dev/dev_area_ok",
+    Release="125",
+    ok=repo_mgr:build_release(Release,DevAreaDir),
+    ok.
+
+
+build_release_ok_2_test_X()->
+    DevAreaDir="/home/joq/erlang/dist_erlang_3-0-0/dev/dev_area_ok_2",
+    Release="110",
+    ok=repo_mgr:build_release(Release,DevAreaDir),
+    ok.
+	
+read_release_1_test_xx()->
+    Release="125",
+    Key={main_release,Release},
+    [{"myadd","101"},
+     {"sd","101"},
+     {"q_mgr","100"},
+     {"mem_dbase","100"}]=sd:call(dbase,infra_dbase,read_object,[services,Key],5000),
+    ok.
+
+read_release_2_test_X()->
+    Release="110",
+    Key={main_release,Release},
+    [{"myadd","666"},
+     {"sd","101"},
+     {"q_mgr","100"},
+     {"mem_dbase","100"}]=sd:call(infra_dbase,infra_dbase,read_object,[services,Key],5000),
+    ok.
+
+
+
+stop_test()->    
+    spawn(fun()->kill_session() end),
+    ok.
+kill_session()->
+    timer:sleep(1000),
+    erlang:halt(),
+    ok.
